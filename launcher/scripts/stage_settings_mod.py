@@ -56,6 +56,13 @@ def stage(game, local_build, profile):
         (bundle / "exefs").mkdir(parents=True)
         for name in ("fefw.exe", "fefw_rt.dll", *(f"exefs/{module}" for module in MODULES)):
             shutil.copy2(local_build / name, bundle / name)
+        # The F1 menu looks for translation tables beside the executable.
+        for locale_dir in (game / "locales", local_build / "locales"):
+            for table in locale_dir.glob("*.ini"):
+                if table.is_file():
+                    target = bundle / "locales" / table.name
+                    target.parent.mkdir(exist_ok=True)
+                    shutil.copy2(table, target)
         manifest = {
             "schema": 1,
             "profile": profile,
