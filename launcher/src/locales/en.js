@@ -136,6 +136,8 @@ export const en = {
     'about.installed': 'Version {version} is installed. Restart the launcher to use it.',
     'about.cancelled': 'Update cancelled.',
     'play.starting': 'Starting fefw.exe...',
+    'play.codeMod': 'Settings MOD',
+    'play.stock': 'Stock game',
     'play.started': 'fefw.exe started (process {pid})',
     'play.startFailed': 'Could not start fefw.exe: {error}',
     'play.exitedOk': 'fefw.exe exited normally.',

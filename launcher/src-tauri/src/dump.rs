@@ -65,7 +65,7 @@ pub fn supported_builds(repo: &Path) -> Vec<(String, String)> {
 }
 
 /// Build id of an NSO (20 bytes at 0x40), upper-case hex; None if the file is missing, short or not a decrypted NSO.
-fn build_id(main: &Path) -> Option<String> {
+pub(crate) fn build_id(main: &Path) -> Option<String> {
     let mut h = [0u8; 0x54];
     fs::File::open(main).ok()?.read_exact(&mut h).ok()?;
     if &h[..4] != b"NSO0" {

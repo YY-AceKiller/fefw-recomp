@@ -1,0 +1,121 @@
+name: Build settings launcher
+
+on:
+  push:
+    branches: [master, settings-mod-launcher]
+  schedule:
+    - cron: '27 3,15 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: settings-launcher-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    outputs:
+      base: ${{ steps.prepare.outputs.base }}
+      upstream: ${{ steps.prepare.outputs.upstream }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare upstream release candidate
+        id: prepare
+        shell: bash
+        env:
+          IS_DEFAULT: ${{ github.ref_name == github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          base=$(git rev-parse HEAD)
+          if [[ "$GITHUB_EVENT_NAME" != push && "$IS_DEFAULT" == true ]]; then
+            tag=$(curl --fail --silent --show-error --retry 3 \
+              https://api.github.com/repos/Goldoire/fefw-recomp/releases/latest | jq -er '.tag_name')
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            git fetch --no-tags https://github.com/Goldoire/fefw-recomp.git "refs/tags/$tag"
+            upstream=$(git rev-parse 'FETCH_HEAD^{commit}')
+            if ! git merge-base --is-ancestor "$upstream" "$base"; then
+              git config user.name 'github-actions[bot]'
+              git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+              git switch -c fefw-candidate
+              git merge --no-ff --no-edit "$upstream"
+              git diff --exit-code "$base" HEAD -- .github/workflows
+              git bundle create "$RUNNER_TEMP/upstream-candidate.bundle" fefw-candidate "^$base"
+              echo "base=$base" >> "$GITHUB_OUTPUT"
+              echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+            elif [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
+              echo 'Latest upstream release is already included.'
+              exit 0
+            fi
+          fi
+          echo 'build=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        if: steps.prepare.outputs.build == 'true'
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test and build Windows launcher
+        if: steps.prepare.outputs.build == 'true'
+        working-directory: launcher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          rustup default stable
+          npm ci --no-audit --no-fund
+          npm run build
+          cargo test --locked --manifest-path src-tauri/Cargo.toml -- --skip update_end_to_end
+          npm run tauri build -- --no-bundle -- --locked
+          Copy-Item src-tauri/target/release/fefw-launcher.exe "${env:RUNNER_TEMP}/fefw-mod-launcher.exe"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.prepare.outputs.build == 'true'
+        with:
+          name: fefw-mod-launcher-windows
+          path: ${{ runner.temp }}/fefw-mod-launcher.exe
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.prepare.outputs.upstream != ''
+        with:
+          name: upstream-candidate
+          path: ${{ runner.temp }}/upstream-candidate.bundle
+          if-no-files-found: error
+          retention-days: 1
+
+  sync:
+    needs: build
+    if: needs.build.outputs.upstream != '' && github.repository == 'YY-AceKiller/fefw-recomp'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: upstream-candidate
+          path: ${{ runner.temp }}
+      - name: Advance fork only to the tested merge
+        shell: bash
+        env:
+          BASE: ${{ needs.build.outputs.base }}
+          UPSTREAM: ${{ needs.build.outputs.upstream }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch "$RUNNER_TEMP/upstream-candidate.bundle" refs/heads/fefw-candidate
+          candidate=$(git rev-parse FETCH_HEAD)
+          [[ "$(git rev-list --parents -n 1 "$candidate")" == "$candidate $BASE $UPSTREAM" ]]
+          [[ "$(git merge-tree --write-tree "$BASE" "$UPSTREAM")" == "$(git rev-parse "$candidate^{tree}")" ]]
+          git diff --exit-code "$BASE" "$candidate" -- .github/workflows
+          remote=$(git ls-remote origin "refs/heads/$DEFAULT_BRANCH" | cut -f1)
+          [[ "$remote" == "$BASE" ]] || { echo 'The default branch changed during testing.'; exit 1; }
+          git push origin "$candidate:refs/heads/$DEFAULT_BRANCH"

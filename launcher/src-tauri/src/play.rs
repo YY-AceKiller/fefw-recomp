@@ -2,7 +2,7 @@
 //! Starts fefw.exe in the run folder, watches it, and reports how it ended.
 
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -26,16 +26,17 @@ pub struct Status {
     pub crashed: bool,
     pub files: Vec<ReportFile>,
     pub message: String,
+    pub modded: bool,
 }
 
 impl Default for Status {
     fn default() -> Self {
-        Status { state: "idle".into(), code: None, crashed: false, files: vec![], message: String::new() }
+        Status { state: "idle".into(), code: None, crashed: false, files: vec![], message: String::new(), modded: false }
     }
 }
 
 #[derive(Default)]
-pub struct PlayState(pub Mutex<Status>);
+pub struct PlayState(pub Mutex<Status>, pub Mutex<Option<PathBuf>>);
 
 fn set_status(app: &AppHandle, s: Status) {
     *app.state::<PlayState>().0.lock().unwrap() = s.clone();
@@ -53,21 +54,35 @@ fn report_files(dir: &Path, started: SystemTime) -> Vec<ReportFile> {
         .collect()
 }
 
-pub fn start(app: &AppHandle, exe: &Path, game_dir: &Path, minimize: bool) -> Result<(), String> {
-    if app.state::<PlayState>().0.lock().unwrap().state == "running" {
-        return Err("The game is already running.".into());
-    }
+pub fn start(app: &AppHandle, paths: &crate::setup::Paths, local: Option<crate::code_mod::Launch>, minimize: bool) -> Result<(), String> {
+    let (exe, dir) = match &local {
+        Some(local) => (local.exe.clone(), local.dir.clone()),
+        None => (paths.exe(), paths.game_dir.clone()),
+    };
     if !exe.is_file() {
-        return Err(format!("fefw.exe was not found at {}. Run Set up first.", crate::dump::fwd(exe)));
+        return Err(format!("fefw.exe was not found at {}. Run Set up first.", crate::dump::fwd(&exe)));
     }
+    let modded = local.is_some();
+    let initial = Status { state: "running".into(), message: "Starting fefw.exe...".into(), modded, ..Default::default() };
+    let state = app.state::<PlayState>();
+    {
+        let mut status = state.0.lock().unwrap();
+        if status.state == "running" {
+            return Err("The game is already running.".into());
+        }
+        *state.1.lock().unwrap() = Some(dir.clone());
+        *status = initial.clone();
+    }
+    let _ = app.emit("game-status", initial);
     let app2 = app.clone();
-    let dir = game_dir.to_path_buf();
-    let exe = exe.to_path_buf();
-    set_status(app, Status { state: "running".into(), message: "Starting fefw.exe...".into(), ..Default::default() });
+    let paths = paths.clone();
     std::thread::spawn(move || {
         let mut cmd = Command::new(&exe);
         // fefw.exe reads fefw.ini from its working directory: every path comes from there
         cmd.current_dir(&dir);
+        if let Some(local) = local {
+            local.configure(&mut cmd, &paths);
+        }
         // the upscaler DLLs ship next to the launcher (upscalers/fsr, upscalers/streamline), which need not be the run folder
         if let Some(d) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
             cmd.env("NXRT_LAUNCHER_DIR", d);
@@ -81,11 +96,11 @@ pub fn start(app: &AppHandle, exe: &Path, game_dir: &Path, minimize: bool) -> Re
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                set_status(&app2, Status { state: "exited".into(), crashed: true, message: format!("Could not start fefw.exe: {e}"), ..Default::default() });
+                set_status(&app2, Status { state: "exited".into(), crashed: true, message: format!("Could not start fefw.exe: {e}"), modded, ..Default::default() });
                 return;
             }
         };
-        set_status(&app2, Status { state: "running".into(), message: format!("fefw.exe started (process {})", child.id()), ..Default::default() });
+        set_status(&app2, Status { state: "running".into(), message: format!("fefw.exe started (process {})", child.id()), modded, ..Default::default() });
         if minimize {
             if let Some(w) = app2.get_webview_window("main") {
                 let _ = w.minimize();
@@ -105,7 +120,7 @@ pub fn start(app: &AppHandle, exe: &Path, game_dir: &Path, minimize: bool) -> Re
             (None, Some(c)) => format!("fefw.exe exited with code {} (0x{:08X}).", c, c as u32),
             (None, None) => "fefw.exe was ended by the system.".to_string(),
         };
-        set_status(&app2, Status { state: "exited".into(), code, crashed, files, message });
+        set_status(&app2, Status { state: "exited".into(), code, crashed, files, message, modded });
         if minimize {
             if let Some(w) = app2.get_webview_window("main") {
                 let _ = w.unminimize();

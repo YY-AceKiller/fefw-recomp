@@ -3,6 +3,7 @@
 //! repository's own lift and build scripts on this PC, writes fefw.ini in a run folder and starts the game. It ships no game files.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod code_mod;
 mod cpu;
 mod dump;
 mod ini;
@@ -138,6 +139,7 @@ struct Overview {
     game_dir: String,
     exe: String,
     exe_exists: bool,
+    code_mod_present: bool,
 }
 
 #[tauri::command]
@@ -156,16 +158,18 @@ fn get_overview(app: AppHandle) -> Overview {
     let cfg = load_config(&app);
     match repo_of(&cfg) {
         Some(repo) => {
-            let exe = if package_tools().is_some() { game_dir_of(&cfg, &repo).join("fefw.exe") } else { setup::exe_path(&repo) };
+            let dir = game_dir_of(&cfg, &repo);
+            let exe = if package_tools().is_some() { dir.join("fefw.exe") } else { setup::exe_path(&repo) };
             Overview {
                 repo_dir: dump::fwd(&repo),
                 repo_ok: true,
-                game_dir: dump::fwd(&game_dir_of(&cfg, &repo)),
+                game_dir: dump::fwd(&dir),
                 exe_exists: exe.is_file(),
+                code_mod_present: dir.join("mods").join(code_mod::FOLDER).exists(),
                 exe: dump::fwd(&exe),
             }
         }
-        None => Overview { repo_dir: cfg.repo_dir.clone(), repo_ok: false, game_dir: String::new(), exe: String::new(), exe_exists: false },
+        None => Overview { repo_dir: cfg.repo_dir.clone(), repo_ok: false, game_dir: String::new(), exe: String::new(), exe_exists: false, code_mod_present: false },
     }
 }
 
@@ -416,8 +420,11 @@ fn play(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), String> 
     if !setup::complete(&p) {
         return Err("Setup is not finished: open Setup and press Set up.".into());
     }
-    settings::ensure_play_paths(&p.game_dir, &p)?;
-    play::start(&app, &p.exe(), &p.game_dir, cfg.minimize_on_play)
+    let local = code_mod::resolve(&p.game_dir, &p.exefs.join("main"), &p.exe().with_file_name("fefw_rt.dll"))?;
+    if local.is_none() {
+        settings::ensure_play_paths(&p.game_dir, &p)?;
+    }
+    play::start(&app, &p, local, cfg.minimize_on_play)
 }
 
 #[tauri::command]
@@ -426,12 +433,18 @@ fn game_status(state: State<play::PlayState>) -> play::Status {
 }
 
 #[tauri::command]
-fn open_game_file(app: AppHandle, name: String) -> Result<(), String> {
+fn open_game_file(app: AppHandle, state: State<play::PlayState>, name: String) -> Result<(), String> {
     if !play::REPORT_FILES.contains(&name.as_str()) {
         return Err("That file cannot be opened from here.".into());
     }
-    let cfg = load_config(&app);
-    let path = game_dir_of(&cfg, &need_repo(&cfg)?).join(&name);
+    let dir = match state.1.lock().unwrap().clone() {
+        Some(dir) => dir,
+        None => {
+            let cfg = load_config(&app);
+            game_dir_of(&cfg, &need_repo(&cfg)?)
+        }
+    };
+    let path = dir.join(&name);
     if !path.is_file() {
         return Err(format!("{name} does not exist."));
     }
@@ -533,10 +546,10 @@ fn cancel_update(state: State<Arc<update::Shared>>) {
     state.cancel.store(true, Ordering::SeqCst);
 }
 
-/// Starts the (new) launcher from the install folder and closes this one.
+/// Reopen this launcher. The official update replaces only the canonical stock launcher name.
 #[tauri::command]
 fn restart_launcher(app: AppHandle) -> Result<(), String> {
-    let exe = exe_dir().join("fefw-launcher.exe");
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     std::process::Command::new(&exe).current_dir(exe_dir()).spawn().map_err(|e| format!("cannot start {}: {e}", exe.display()))?;
     app.exit(0);
     Ok(())

@@ -60,6 +60,7 @@ export async function render(el, ctx) {
         <div class="row wrap">
           <button class="btn primary big" id="play" ${ready && !running ? '' : 'disabled'}>${icon('play')}${esc(t(running ? 'play.running' : 'play.title'))}</button>
           ${statusChip(status)}
+          ${ov.repo_ok ? `<span class="chip">${esc(t((running ? status.modded : ov.code_mod_present) ? 'play.codeMod' : 'play.stock'))}</span>` : ''}
         </div>
         ${reportHtml(status)}
 
@@ -87,7 +88,15 @@ export async function render(el, ctx) {
         <p class="faint">${esc(t('play.footer'))}</p>
       </div>`;
     refreshIcons();
-    el.querySelector('#play')?.addEventListener('click', () => api('play').catch((e) => toast(errText(e), 'error')));
+    el.querySelector('#play')?.addEventListener('click', async () => {
+      try {
+        ov.code_mod_present = (await api('get_overview')).code_mod_present;
+        await api('play');
+      } catch (e) {
+        draw();
+        toast(errText(e), 'error');
+      }
+    });
     el.querySelector('#to-setup')?.addEventListener('click', () => ctx.go('setup'));
     el.querySelector('#open-dir')?.addEventListener('click', () => api('open_game_dir').catch((e) => toast(errText(e), 'error')));
     el.querySelector('#open-mods')?.addEventListener('click', () => api('open_mods_dir').catch((e) => toast(errText(e), 'error')));

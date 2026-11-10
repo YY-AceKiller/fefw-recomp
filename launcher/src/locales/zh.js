@@ -5,6 +5,8 @@ export const zh = {
   code: 'zh',
   name: '中文',
   strings: {
+    'play.codeMod': '设置补正版',
+    'play.stock': '普通版',
     // ----- 外框 -----
     'brand.name': 'fefw recomp',
     'nav.main': '主菜单',
