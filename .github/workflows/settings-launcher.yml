@@ -21,6 +21,8 @@ jobs:
     outputs:
       base: ${{ steps.prepare.outputs.base }}
       upstream: ${{ steps.prepare.outputs.upstream }}
+      release_commit: ${{ steps.prepare.outputs.release_commit }}
+      version: ${{ steps.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -34,6 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           base=$(git rev-parse HEAD)
+          candidate_tag=''
           if [[ "$GITHUB_EVENT_NAME" != push && "$IS_DEFAULT" == true ]]; then
             tag=$(curl --fail --silent --show-error --retry 3 \
               https://api.github.com/repos/Goldoire/fefw-recomp/releases/latest | jq -er '.tag_name')
@@ -49,11 +52,26 @@ jobs:
               git bundle create "$RUNNER_TEMP/upstream-candidate.bundle" fefw-candidate "^$base"
               echo "base=$base" >> "$GITHUB_OUTPUT"
               echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
-            elif [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
-              echo 'Latest upstream release is already included.'
-              exit 0
+              candidate_tag=$tag
             fi
           fi
+          version=$(jq -er '.version | strings' launcher/src-tauri/tauri.conf.json)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ -n "$candidate_tag" && "$candidate_tag" != "v$version" ]]; then
+            echo "Launcher version $version does not match upstream tag $candidate_tag."
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == schedule && -z "$candidate_tag" ]]; then
+            status=$(curl --silent --show-error --retry 3 -o /dev/null -w '%{http_code}' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/settings-v$version")
+            case "$status" in
+              200) echo "Upstream is already included and settings-v$version is published."; exit 0 ;;
+              404) echo "Building the current version to recover its missing release." ;;
+              *) echo "Release lookup failed with HTTP $status."; exit 1 ;;
+            esac
+          fi
+          echo "release_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo 'build=true' >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         if: steps.prepare.outputs.build == 'true'
@@ -119,3 +137,52 @@ jobs:
           remote=$(git ls-remote origin "refs/heads/$DEFAULT_BRANCH" | cut -f1)
           [[ "$remote" == "$BASE" ]] || { echo 'The default branch changed during testing.'; exit 1; }
           git push origin "$candidate:refs/heads/$DEFAULT_BRANCH"
+
+  release:
+    needs: [build, sync]
+    if: >-
+      !cancelled() &&
+      github.repository == 'YY-AceKiller/fefw-recomp' &&
+      github.ref_name == github.event.repository.default_branch &&
+      needs.build.result == 'success' &&
+      needs.build.outputs.release_commit != '' &&
+      (needs.sync.result == 'success' || needs.sync.result == 'skipped')
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: fefw-mod-launcher-windows
+          path: ${{ runner.temp }}/launcher-release
+      - name: Publish the tested Windows launcher
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          tag="settings-v$VERSION"
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT_BRANCH" --jq '.sha')
+          [[ "$head" == "$RELEASE_COMMIT" ]] || { echo 'The tested commit is no longer the default branch head.'; exit 1; }
+          asset="$RUNNER_TEMP/launcher-release/fefw-mod-launcher.exe"
+          test -s "$asset"
+          if existing=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" 2>/dev/null); then
+            jq -e '(.draft == false) and any(.assets[]; .name == "fefw-mod-launcher.exe" and .size > 0)' <<< "$existing" > /dev/null
+            echo "$tag is already published."
+            exit 0
+          fi
+          gh release create "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_COMMIT" \
+            --title "设置补正启动器 v$VERSION" --latest --notes-file - <<EOF
+          下载 Assets 中的 \`fefw-mod-launcher.exe\`，关闭游戏和启动器后，覆盖游戏目录中的同名文件。
+
+          适用于已经完成准备的 Windows 版。这个下载仅包含启动器。MOD 和存档使用本机文件。
+
+          - [上游 v$VERSION](https://github.com/Goldoire/fefw-recomp/releases/tag/v$VERSION)
+          - [构建记录](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)
+          EOF

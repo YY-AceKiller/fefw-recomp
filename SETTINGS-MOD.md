@@ -1,6 +1,6 @@
 # 设置补正启动器
 
-把 Fork 构建产物 `fefw-mod-launcher.exe` 放进已完成游戏准备的普通版目录，与官方 `fefw-launcher.exe` 并列。使用 `fefw-mod-launcher.exe` 启动。
+从 [Fork 的 Releases](https://github.com/YY-AceKiller/fefw-recomp/releases/latest) 下载 `fefw-mod-launcher.exe`，放进已完成游戏准备的普通版目录，与官方 `fefw-launcher.exe` 并列。使用 `fefw-mod-launcher.exe` 启动。
 
 - 存在 `mods/设置补正` 时，启动器在每次点击开始游戏时读取本机构建清单，并检查两版的游戏 Build ID 和运行库 SHA-256。
 - 把 `设置补正` 文件夹移出 `mods` 后，再点击开始游戏会启动普通版。
@@ -19,6 +19,6 @@ python launcher/scripts/stage_settings_mod.py --game 'D:\fefw-recomp' --build 'D
 
 ## 上游更新
 
-在 Fork 的 Actions 启用 **Build settings launcher**。默认分支每 12 小时检查 Goldoire/fefw-recomp 最新正式版，也可以手动运行。发现新标签时在临时分支合并上游，运行 Rust 测试并构建 Windows 启动器。成功后工作流更新 Fork 的默认分支，构建产物可从该次 Actions 运行下载。合并冲突、构建失败或默认分支在构建期间变动都会阻止自动推进。
+在 Fork 的 Actions 启用 **Build settings launcher**。默认分支每 12 小时检查 Goldoire/fefw-recomp 最新正式版，也可以手动运行。发现新标签时在临时分支合并上游，运行 Rust 测试并构建 Windows 启动器。成功后工作流更新 Fork 的默认分支，并把启动器发布到 Releases 的 `settings-v<版本>`。每个版本发布一次。合并冲突、构建失败或默认分支在构建期间变动都会阻止自动发布。
 
 GitHub 构建的是启动器。游戏构建和 MOD 适配使用玩家本机的文件。上游修改游戏 Build ID 或运行库时，需要在本机重新验证 MOD，再安装新的构建。请把游戏转储、游戏二进制、密钥、存档和本机 MOD 构建留在 Git 工作区以外。
